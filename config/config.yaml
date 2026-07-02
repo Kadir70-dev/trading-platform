@@ -1,0 +1,77 @@
+# ==========================================================
+# Static platform configuration. Secrets live in .env only.
+# Values here are defaults; .env overrides at runtime.
+# ==========================================================
+
+broker:
+  name: EXNESS
+  platform: MT5
+
+symbols:
+  - name: XAUUSD
+    enabled: true
+    digits: 2
+    point: 0.01
+    min_lot: 0.01
+    max_lot: 50.0
+    lot_step: 0.01
+    max_spread_points: 60      # Gold spreads wider; per-symbol override
+  - name: EURUSD
+    enabled: true
+    digits: 5
+    point: 0.00001
+    min_lot: 0.01
+    max_lot: 100.0
+    lot_step: 0.01
+    max_spread_points: 25
+  - name: GBPUSD
+    enabled: true
+    digits: 5
+    point: 0.00001
+    min_lot: 0.01
+    max_lot: 100.0
+    lot_step: 0.01
+    max_spread_points: 30
+  - name: USDJPY
+    enabled: true
+    digits: 3
+    point: 0.001
+    min_lot: 0.01
+    max_lot: 100.0
+    lot_step: 0.01
+    max_spread_points: 25
+
+timeframes:
+  supported: [M1, M5, M15, M30, H1]
+  default: M1
+
+strategy:
+  name: ema_rsi
+  ema_fast: 20
+  ema_slow: 50
+  rsi_period: 14
+  rsi_buy_level: 50
+  rsi_sell_level: 50
+  atr_period: 14
+  sl_atr_mult: 1.5
+  tp_rr: 2.0
+  min_confidence: 55          # Don't act below this signal confidence
+
+risk:
+  max_risk_pct: 1.0
+  min_rr: 2.0
+  max_daily_loss_pct: 5.0
+  max_drawdown_pct: 20.0
+  max_open_trades: 5
+  max_symbol_exposure: 2
+  trailing:
+    enabled: true
+    activate_at_rr: 1.0        # Start trailing once trade is +1R
+    trail_atr_mult: 1.0
+  breakeven:
+    enabled: true
+    trigger_rr: 1.0            # Move SL to entry once +1R
+
+scheduler:
+  interval_seconds: 60
+  warmup_bars: 200             # Bars pulled for indicator stability

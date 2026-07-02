@@ -1,0 +1,83 @@
+# ============================================================
+# Exness MT5 Trading Platform — full stack
+#
+#   docker compose up --build
+#
+# Services: postgres + python(strategy/MT5) + cpp(gateway) + go(scheduler).
+# In containers the Python service uses the simulation backend (MetaTrader5 is
+# Windows-only). For LIVE trading, run the Python service on a Wine-MT5 host and
+# set PYTHON_SERVICE_ADDR for the cpp/go services accordingly.
+# ============================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+      POSTGRES_USER: ${POSTGRES_USER:-trader}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader_pw}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trader}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  python:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    env_file: .env
+    environment:
+      LOG_DIR: /app/logs
+    ports:
+      - "8800:8800"
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8800/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cpp-gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpp
+    env_file: .env
+    environment:
+      CPP_GATEWAY_ADDR: 0.0.0.0:8900
+      PYTHON_SERVICE_ADDR: python:8800
+    ports:
+      - "8900:8900"
+    depends_on:
+      python:
+        condition: service_healthy
+
+  trader:
+    build:
+      context: .
+      dockerfile: docker/trader.Dockerfile
+    env_file: .env
+    environment:
+      GO_HTTP_ADDR: 0.0.0.0:8080
+      PYTHON_SERVICE_ADDR: python:8800
+      CPP_GATEWAY_ADDR: cpp-gateway:8900
+      DATABASE_URL: postgres://${POSTGRES_USER:-trader}:${POSTGRES_PASSWORD:-trader_pw}@postgres:5432/${POSTGRES_DB:-trading}?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      python:
+        condition: service_healthy
+      cpp-gateway:
+        condition: service_started
+    volumes:
+      - ./logs:/app/logs
+
+volumes:
+  pgdata:

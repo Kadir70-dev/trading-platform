@@ -1,0 +1,12 @@
+.git
+.venv
+bin
+cpp/build
+logs/*.log
+logs/*.out
+logs/*.jsonl
+data
+**/__pycache__
+.pytest_cache
+*.md
+docs

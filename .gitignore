@@ -1,0 +1,24 @@
+# secrets
+.env
+
+# build artifacts
+/bin/
+/cpp/build/
+*.o
+*.exe
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# logs & data
+/logs/*.log
+/logs/*.out
+/logs/*.jsonl
+/data/*
+
+# keep dirs
+!logs/.gitkeep
+!data/.gitkeep

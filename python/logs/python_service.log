@@ -1,0 +1,79 @@
+2026-06-30 18:06:04.979 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2333.03000 rsi=56.5 ema=2330.30934/2332.91922
+2026-06-30 18:06:12.524 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2333.03000 rsi=56.5 ema=2330.30934/2332.91922
+2026-06-30 18:06:12.534 | INFO     | mt5.client:market_order:327 - [SIM] opened BUY 0.05 XAUUSD @ 2348.3 ticket=100001
+2026-06-30 18:08:01.449 | INFO     | mt5.client:close_position:346 - [SIM] closed ticket=100001 vol=0.05 pnl≈17000.00
+2026-06-30 18:44:48.890 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 18:44:48.894 | INFO     | mt5.client:market_order:327 - [SIM] opened BUY 0.01 EURUSD @ 1.08546 ticket=100001
+2026-06-30 19:21:33.438 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:21:33.457 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:21:33.464 | INFO     | mt5.client:market_order:327 - [SIM] opened SELL 0.01 EURUSD @ 1.08508 ticket=100002
+2026-06-30 19:21:33.477 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:21:33.477 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:21:33.508 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:21:33.509 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:22:33.479 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:22:33.494 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:22:33.507 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:22:33.508 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:22:33.518 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:22:33.519 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:23:33.476 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:23:33.489 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:23:33.500 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:23:33.500 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:23:33.510 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:23:33.510 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:24:33.474 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:24:33.495 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:24:33.507 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:24:33.507 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:24:33.525 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:24:33.526 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:25:33.449 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:25:33.461 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:25:33.488 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:25:33.488 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:25:33.500 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:25:33.501 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:26:33.476 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:26:33.486 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:26:33.498 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:26:33.498 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:26:33.508 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:26:33.508 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:27:33.482 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:27:33.502 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:27:33.525 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:27:33.526 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:27:33.555 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:27:33.556 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:28:33.482 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:28:33.493 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:28:33.512 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:28:33.513 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:28:33.530 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:28:33.530 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:29:33.504 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:29:33.545 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:29:33.571 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:29:33.572 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:29:33.587 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:29:33.587 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:30:33.499 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:30:33.524 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:30:33.559 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:30:33.561 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:30:33.596 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:30:33.597 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:31:33.490 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:31:33.506 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:31:33.524 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:31:33.524 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:31:33.541 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:31:33.541 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547
+2026-06-30 19:32:33.475 | INFO     | strategies.signal_generator:generate:41 - SIGNAL XAUUSD M1 HOLD conf=0.0 px=2299.88000 rsi=49.1 ema=2299.45369/2304.10295
+2026-06-30 19:32:33.486 | INFO     | strategies.signal_generator:generate:41 - SIGNAL EURUSD M1 SELL conf=56.4 px=1.08303 rsi=37.7 ema=1.08425/1.08463
+2026-06-30 19:32:33.497 | INFO     | strategies.signal_generator:generate:35 - GBPUSD BUY downgraded to HOLD (conf 54.6 < 55.0)
+2026-06-30 19:32:33.497 | INFO     | strategies.signal_generator:generate:41 - SIGNAL GBPUSD M1 HOLD conf=54.6 px=1.28970 rsi=53.8 ema=1.28942/1.28815
+2026-06-30 19:32:33.507 | INFO     | strategies.signal_generator:generate:35 - USDJPY BUY downgraded to HOLD (conf 37.5 < 55.0)
+2026-06-30 19:32:33.507 | INFO     | strategies.signal_generator:generate:41 - SIGNAL USDJPY M1 HOLD conf=37.5 px=157.86300 rsi=68.2 ema=157.64280/157.63547

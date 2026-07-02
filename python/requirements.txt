@@ -1,0 +1,13 @@
+MetaTrader5==5.0.45
+pandas==2.2.2
+numpy==1.26.4
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.4
+pydantic-settings==2.3.4
+loguru==0.7.2
+python-dotenv==1.0.1
+httpx==0.27.0
+# Optional: 'ta' indicators library (we ship our own as the source of truth)
+ta==0.11.0
+pytest==8.2.2

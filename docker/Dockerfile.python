@@ -1,0 +1,20 @@
+# Python MT5 / strategy service.
+# NOTE: the MetaTrader5 package is Windows-only; inside Linux containers the
+# service automatically uses the simulation backend. For LIVE trading, run this
+# service on a host with the Wine MT5 bridge (see docs/MT5_LINUX_WINE.md) rather
+# than in this container, and point the Go/C++ services at it.
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+
+COPY python/requirements.txt .
+# Skip MetaTrader5 (Windows-only) inside the Linux container image.
+RUN grep -v '^MetaTrader5' requirements.txt > req.linux.txt && \
+    pip install --no-cache-dir -r req.linux.txt
+
+COPY python/ /app/
+COPY config/ /app/config/
+
+EXPOSE 8800
+CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8800"]
