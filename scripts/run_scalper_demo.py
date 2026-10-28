@@ -37,11 +37,16 @@ from scalper.state_machine import ScalperStateMachine  # noqa: E402
 from scalper.types import Position, PositionState  # noqa: E402
 from scalper import reconciliation as rec  # noqa: E402
 from scalper import execution_safety as es  # noqa: E402
+from scalper import sessions as sess  # noqa: E402
+from scalper.notify import TelegramNotifier  # noqa: E402
+from scalper.process_guard import SingleInstanceLock  # noqa: E402
 
 POLL_SEC = 5  # how often to check for a newly closed bar
-# Step 3 account/risk config (env-overridable; NOT strategy parameters).
+# Step 3/4 account/runtime config (env-overridable; NOT strategy parameters).
 RISK_PCT = float(os.getenv("SCALPER_RISK_PER_TRADE_PCT", "0.005"))   # 0.5% default
 RECOVERY_POLICY = os.getenv("SCALPER_RECOVERY_POLICY", "manual")      # manual | adopt
+LOCK_PATH = os.getenv("SCALPER_LOCK_PATH", str(ROOT / "data" / "scalper-demo" / "scalper.lock"))
+SESSION_GATE = os.getenv("SCALPER_SESSION_GATE", "1") != "0"         # block entries off-session
 
 
 def log_line(**fields) -> None:
@@ -111,8 +116,18 @@ def main() -> int:
                                         "strategy is profitable — set SCALPER_HEDGE_ENABLED=false")
         sys.exit(1)
 
+    # Single-instance lock: a VPS reboot / Task Scheduler double-fire must never
+    # start a second bot against the same account (duplicate-entry prevention).
+    lock = SingleInstanceLock(LOCK_PATH)
+    lk = lock.acquire()
+    if not lk.acquired:
+        log_line(event="ABORT", reason=f"another scalper instance is running (owner pid={lk.owner_pid})")
+        sys.exit(1)
+
+    notifier = TelegramNotifier.from_env()   # disabled unless token+chat in env
     conn, broker = connect_real_mt5()
     adapter = BrokerAdapter(broker, params)
+    notifier.broker_connection(True)
     # pnl_mode="broker": the strategy never books its own leg_pnl into the risk
     # guard. We reconcile the real MT5 deals and feed the authoritative realized
     # figure in, so a simulated number can never drive live risk controls.
@@ -154,19 +169,21 @@ def main() -> int:
     log_line(event="RECOVERY", action=plan.action, reason=plan.reason,
               ours=len(plan.positions), orphans_no_sl=len(plan.orphans_no_sl),
               foreign=len(plan.foreign_positions), state_known=plan.state_known)
-    if plan.action == es.RECOVER_ADOPT and plan.positions:
-        p0 = plan.positions[0]
-        side = PositionState.LONG if p0.get("side") == "BUY" else PositionState.SHORT
-        sm.state = side
-        sm.position = Position(side, float(p0["entry_price"]), datetime.now(timezone.utc), 0,
-                               params.stop_distance_usd, ticket=p0["ticket"])
-        primary_ticket = p0["ticket"]
+    # Defer rebuilding an adopted Position until the first bar, so entry_bar_index
+    # is set to the real current bar index (bars_held starts at 0) — see
+    # es.adopt_position. Building it now with a stale index could instantly trip
+    # EXIT_MAX_HOLD_TIME on an inherited position.
+    pending_adopt = plan.positions[0] if (plan.action == es.RECOVER_ADOPT and plan.positions) else None
+    if pending_adopt:
+        primary_ticket = pending_adopt["ticket"]
     if not plan.state_known:
         # MANUAL / BLOCKED / orphan-without-SL => fail closed: monitor only, no new entries.
         sm.guard.set_broker_state_known(False, reason=plan.reason)
+        notifier.manual_intervention(plan.reason)
 
     log_line(event="STARTED", login=acct["login"], server=acct["server"], symbol=params.symbol,
               risk_pct=RISK_PCT, recovery=plan.action, magic=params.magic_number, run_dir=str(run_dir))
+    notifier.startup(params.symbol, ident.mode, acct["balance"])
 
     last_bar_time = None
     try:
@@ -189,30 +206,62 @@ def main() -> int:
             now = datetime.now(timezone.utc)
             spread_points = info["spread_points"]
 
+            # Safe adoption: build the inherited Position now that we have a real
+            # bar index (bars_held starts at 0, not a spurious huge value).
+            if pending_adopt is not None:
+                bar_index = len(bars) - 1
+                sm.position = es.adopt_position(params, pending_adopt, bar_index,
+                                                entry_time=now)
+                sm.state = sm.position.direction
+                log_line(event="ADOPTED", ticket=pending_adopt["ticket"], bar_index=bar_index,
+                          side=sm.position.direction.value)
+                pending_adopt = None
+
+            # Session gate: entries only during valid Gold sessions (monitoring
+            # and exits always run). Broker trade_allowed above is the hard gate;
+            # this blocks weekends/maintenance so no entry is attempted at rollover.
+            in_session = (not SESSION_GATE) or sess.entries_allowed(now)
+
             decisions = sm.on_bar(bars, spread_points, now)
 
             for d in decisions:
                 if not still_connected_and_demo(conn):
                     log_line(event="EMERGENCY_STOP", reason="MT5 disconnected mid-decision")
+                    notifier.emergency_stop("MT5 disconnected mid-decision")
                     return 1
 
                 if d.event.startswith("ENTER_"):
-                    primary_ticket = _sized_open(broker, adapter, sm, params, spec, d, now, last_bar_time, None)
+                    if not in_session:
+                        log_line(event="ENTRY_SKIPPED", reason="SESSION_CLOSED")
+                        sm.state = PositionState.FLAT   # roll back un-executed entry
+                        sm.position = None
+                        primary_ticket = None
+                    else:
+                        primary_ticket = _sized_open(broker, adapter, sm, params, spec, d, now, last_bar_time, None, notifier)
                 elif d.event.startswith("EXIT_"):
-                    _execute_close(broker, sm, ledger, primary_ticket, d.reason_code, d.detail, now)
+                    _execute_close(broker, sm, ledger, primary_ticket, d.reason_code, d.detail, now, notifier)
                     primary_ticket = None
                 elif d.event.startswith("FLIP_"):
-                    primary_ticket = _sized_open(broker, adapter, sm, params, spec, d, now, last_bar_time, d.detail)
+                    if not in_session:
+                        log_line(event="ENTRY_SKIPPED", reason="SESSION_CLOSED_FLIP")
+                        sm.state = PositionState.FLAT   # old leg already closed by EXIT handler
+                        sm.position = None
+                        primary_ticket = None
+                    else:
+                        primary_ticket = _sized_open(broker, adapter, sm, params, spec, d, now, last_bar_time, d.detail, notifier)
 
                 log_line(event=d.event, reason_code=d.reason_code, state=d.state, detail=d.detail)
     finally:
         conn.shutdown()
+        notifier.broker_connection(False)
+        notifier.shutdown("runner exit")
+        lock.release()
         log_line(event="STOPPED")
     return 0
 
 
 def _sized_open(broker, adapter: BrokerAdapter, sm: ScalperStateMachine, params: ScalperParams,
-                spec, decision, now, bar_time, flip_detail) -> int | None:
+                spec, decision, now, bar_time, flip_detail, notifier=None) -> int | None:
     """Risk-size and fail-closed-gate an entry the strategy has already decided.
 
     The strategy DECISION is untouched; if risk sizing / duplicate / state
@@ -241,10 +290,15 @@ def _sized_open(broker, adapter: BrokerAdapter, sm: ScalperStateMachine, params:
         return None
 
     comment = f"scalper|{tag}"
+    side = "BUY" if position.direction == PositionState.LONG else "SELL"
     res = _execute_open(broker, adapter, params, position, flip_detail, gate.volume, comment, sizing)
     if res is None:
         sm.state = PositionState.FLAT
         sm.position = None
+        if notifier is not None:
+            notifier.order_rejected(f"{side} open failed")
+    elif notifier is not None:
+        notifier.order_executed(side, gate.volume, position.entry_price, res)
     return res
 
 
@@ -283,7 +337,7 @@ def _safe(fn):
 
 
 def _execute_close(broker: MT5Broker, sm: ScalperStateMachine, ledger: "rec.ReconcileLedger",
-                   ticket: int | None, reason_code: str, detail, now) -> None:
+                   ticket: int | None, reason_code: str, detail, now, notifier=None) -> None:
     """Close a position and reconcile the AUTHORITATIVE realized P&L from broker
     deals. Never books strategy-computed P&L; never treats an unknown outcome as
     zero; fails closed (blocks new entries) on a transient/absent outcome."""
@@ -304,12 +358,19 @@ def _execute_close(broker: MT5Broker, sm: ScalperStateMachine, ledger: "rec.Reco
         ledger.book_tickets(reconciliation.booked_deal_tickets)
         sm.record_broker_realized(reconciliation.realized, now)   # broker truth -> risk guard
         sm.guard.set_broker_state_known(True)
+        if notifier is not None:
+            notifier.position_closed(ticket, reconciliation.realized, confirmed=True)
+            if sm.guard.kill_switch:
+                notifier.daily_loss_limit(sm.guard.daily_pnl)
     elif reconciliation.status == rec.STATUS_STILL_OPEN:
         # The close did not take; do NOT rebook or resend blindly. Leave the
         # position to the next bar's logic; state is still known.
         pass
     else:  # TRULY_ABSENT or TRANSIENT -> outcome unknown, fail closed
         sm.guard.set_broker_state_known(False, reason=reconciliation.detail)
+        if notifier is not None:
+            notifier.position_closed(ticket, None, confirmed=False)   # unknown — never a fake 0
+            notifier.manual_intervention(reconciliation.detail)
 
     log_line(event="ORDER_CLOSE", ticket=ticket, close_price=res.price,
               close_reason=reason_code, close_detail=detail,

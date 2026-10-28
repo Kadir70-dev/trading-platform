@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from .sizing import SizingResult, compute_lot
 from .symbol_spec import SymbolSpec
+from .types import Position, PositionState
 
 # ---------------------------------------------------------------------------
 # Phase A — symbol specifications / preflight
@@ -127,6 +128,26 @@ def startup_recovery(broker, magic: int, symbol: str, *, policy: str = "manual")
 
     return RecoveryPlan(RECOVER_MANUAL, mine, orphans, foreign, False,
                         "pre-existing position requires manual review (policy=manual)")
+
+
+def adopt_position(params, broker_position: dict, current_bar_index: int, entry_time=None) -> Position:
+    """Rebuild internal Position state for an adopted broker position.
+
+    IMPORTANT (Step-4 safety): entry_bar_index is set to the CURRENT bar index,
+    so bars_held starts at 0 and grows naturally. Setting it to 0 (as a naive
+    adoption would) against a large live bar index makes bars_held appear huge
+    and would instantly trip EXIT_MAX_HOLD_TIME — unsafe trade management on an
+    inherited position. This prevents that. Peak/worst favorable move reset to 0
+    so trailing re-arms from adoption rather than acting on an unknown MFE."""
+    side = PositionState.LONG if broker_position.get("side") == "BUY" else PositionState.SHORT
+    return Position(
+        direction=side,
+        entry_price=float(broker_position["entry_price"]),
+        entry_time=entry_time,
+        entry_bar_index=current_bar_index,
+        risk_unit=params.stop_distance_usd,
+        ticket=broker_position.get("ticket"),
+    )
 
 
 # ---------------------------------------------------------------------------
