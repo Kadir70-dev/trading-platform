@@ -19,6 +19,7 @@ triggers a graceful shutdown (mirrors scripts/run_pepperstone_demo.py).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -33,10 +34,14 @@ from mt5.connection import MT5Connection  # noqa: E402
 from scalper.broker_adapter import BrokerAdapter  # noqa: E402
 from scalper.config import ScalperParams  # noqa: E402
 from scalper.state_machine import ScalperStateMachine  # noqa: E402
-from scalper.types import PositionState  # noqa: E402
+from scalper.types import Position, PositionState  # noqa: E402
 from scalper import reconciliation as rec  # noqa: E402
+from scalper import execution_safety as es  # noqa: E402
 
 POLL_SEC = 5  # how often to check for a newly closed bar
+# Step 3 account/risk config (env-overridable; NOT strategy parameters).
+RISK_PCT = float(os.getenv("SCALPER_RISK_PER_TRADE_PCT", "0.005"))   # 0.5% default
+RECOVERY_POLICY = os.getenv("SCALPER_RECOVERY_POLICY", "manual")      # manual | adopt
 
 
 def log_line(**fields) -> None:
@@ -131,8 +136,37 @@ def main() -> int:
         log_line(event="ABORT", reason=f"pre-flight failed: mode={ident.mode} trade_allowed={info['trade_allowed']}")
         conn.shutdown()
         return 1
+
+    # Phase A — verify broker symbol spec; without it we cannot size safely.
+    pf = es.preflight(broker, params.symbol, expect_mode="DEMO",
+                      ident_mode=ident.mode, trade_allowed=info["trade_allowed"])
+    if not pf.ok:
+        log_line(event="ABORT", reason=f"preflight blocked: {pf.reason} (cannot verify symbol spec)")
+        conn.shutdown()
+        return 1
+    spec = pf.spec
+    log_line(event="SYMBOL_SPEC", symbol=params.symbol, point=spec.point, tick_size=spec.tick_size,
+              tick_value=spec.tick_value, contract_size=spec.contract_size,
+              volume_min=spec.volume_min, volume_max=spec.volume_max, volume_step=spec.volume_step)
+
+    # Phase C — restart recovery (read-only; never closes/modifies a position).
+    plan = es.startup_recovery(broker, params.magic_number, params.symbol, policy=RECOVERY_POLICY)
+    log_line(event="RECOVERY", action=plan.action, reason=plan.reason,
+              ours=len(plan.positions), orphans_no_sl=len(plan.orphans_no_sl),
+              foreign=len(plan.foreign_positions), state_known=plan.state_known)
+    if plan.action == es.RECOVER_ADOPT and plan.positions:
+        p0 = plan.positions[0]
+        side = PositionState.LONG if p0.get("side") == "BUY" else PositionState.SHORT
+        sm.state = side
+        sm.position = Position(side, float(p0["entry_price"]), datetime.now(timezone.utc), 0,
+                               params.stop_distance_usd, ticket=p0["ticket"])
+        primary_ticket = p0["ticket"]
+    if not plan.state_known:
+        # MANUAL / BLOCKED / orphan-without-SL => fail closed: monitor only, no new entries.
+        sm.guard.set_broker_state_known(False, reason=plan.reason)
+
     log_line(event="STARTED", login=acct["login"], server=acct["server"], symbol=params.symbol,
-              lot_size=params.lot_size, magic=params.magic_number, run_dir=str(run_dir))
+              risk_pct=RISK_PCT, recovery=plan.action, magic=params.magic_number, run_dir=str(run_dir))
 
     last_bar_time = None
     try:
@@ -163,12 +197,12 @@ def main() -> int:
                     return 1
 
                 if d.event.startswith("ENTER_"):
-                    primary_ticket = _execute_open(broker, adapter, params, sm.position, None)
+                    primary_ticket = _sized_open(broker, adapter, sm, params, spec, d, now, last_bar_time, None)
                 elif d.event.startswith("EXIT_"):
                     _execute_close(broker, sm, ledger, primary_ticket, d.reason_code, d.detail, now)
                     primary_ticket = None
                 elif d.event.startswith("FLIP_"):
-                    primary_ticket = _execute_open(broker, adapter, params, sm.position, d.detail)
+                    primary_ticket = _sized_open(broker, adapter, sm, params, spec, d, now, last_bar_time, d.detail)
 
                 log_line(event=d.event, reason_code=d.reason_code, state=d.state, detail=d.detail)
     finally:
@@ -177,20 +211,59 @@ def main() -> int:
     return 0
 
 
-def _execute_open(broker: MT5Broker, adapter: BrokerAdapter, params: ScalperParams,
-                  position, flip_detail: dict | None) -> int | None:
-    res = adapter.open(position.direction, position.entry_price, position.risk_unit, comment="scalper")
-    acct = broker.account_info()
+def _sized_open(broker, adapter: BrokerAdapter, sm: ScalperStateMachine, params: ScalperParams,
+                spec, decision, now, bar_time, flip_detail) -> int | None:
+    """Risk-size and fail-closed-gate an entry the strategy has already decided.
+
+    The strategy DECISION is untouched; if risk sizing / duplicate / state
+    checks block it, the trade is SKIPPED and the state machine is rolled back
+    to FLAT so internal state stays consistent with the broker (no phantom
+    position). Never changes thresholds or signals."""
+    position = sm.position
+    acct = _safe(broker.account_info) or {}
+    equity = acct.get("equity") or acct.get("balance") or 0.0
+
+    sizing = es.plan_entry_lot(equity, RISK_PCT, spec, params,
+                               price=position.entry_price, free_margin=acct.get("free_margin"),
+                               leverage=params.leverage)
+    positions = _safe(broker.positions)
+    tag = es.bar_tag(params.symbol, bar_time)
+    duplicate = positions is not None and rec.would_duplicate(positions, params.magic_number, params.symbol, tag)
+    state_known = sm.guard.broker_state_known and positions is not None
+
+    gate = es.entry_gate(preflight_ok=True, broker_state_known=state_known,
+                         guard_ok=True, sizing=sizing, duplicate=duplicate)
+    if not gate.allowed:
+        log_line(event="ENTRY_SKIPPED", reason=gate.reason, sizing_reason=sizing.reason,
+                  risk_budget=sizing.risk_budget_usd, computed_lot=sizing.lot, equity=equity)
+        sm.state = PositionState.FLAT    # roll back the un-executed entry
+        sm.position = None
+        return None
+
+    comment = f"scalper|{tag}"
+    res = _execute_open(broker, adapter, params, position, flip_detail, gate.volume, comment, sizing)
+    if res is None:
+        sm.state = PositionState.FLAT
+        sm.position = None
+    return res
+
+
+def _execute_open(broker, adapter: BrokerAdapter, params: ScalperParams,
+                  position, flip_detail, volume: float, comment: str, sizing) -> int | None:
+    res = adapter.open(position.direction, position.entry_price, position.risk_unit,
+                       comment=comment, volume=volume)
+    acct = _safe(broker.account_info) or {}
     sl = (position.entry_price - position.risk_unit * params.emergency_stop_r_mult
           if position.direction == PositionState.LONG
           else position.entry_price + position.risk_unit * params.emergency_stop_r_mult)
     fields = dict(event="ORDER_OPEN", symbol=params.symbol,
                   side="BUY" if position.direction == PositionState.LONG else "SELL",
-                  lot=params.lot_size, entry=res.price, sl=sl, tp=None,
+                  lot=volume, risk_usd=sizing.risk_usd, risk_budget=sizing.risk_budget_usd,
+                  entry=res.price, sl=sl, tp=None,
                   ticket=res.ticket, retcode=res.retcode, retcode_desc=res.retcode_desc,
-                  balance=acct["balance"], equity=acct["equity"])
+                  balance=acct.get("balance"), equity=acct.get("equity"))
     if flip_detail is not None:
-        fields["flip"] = flip_detail  # old_direction/old_entry/close_price/realized_pnl/reversal_reason/...
+        fields["flip"] = flip_detail
     log_line(**fields)
     if res.ok and res.ticket:
         position.ticket = res.ticket

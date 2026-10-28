@@ -22,11 +22,18 @@ class BrokerAdapter:
         self.broker = broker
         self.p = params
 
-    def open(self, direction: PositionState, price: float, risk_unit: float, comment: str) -> OrderResult:
+    def open(self, direction: PositionState, price: float, risk_unit: float, comment: str,
+             volume: float | None = None) -> OrderResult:
+        """`volume` overrides the fixed `lot_size` when the runner supplies a
+        risk-sized lot (Step 3). The SL distance is unchanged — the emergency
+        stop is a PRICE distance (`risk_unit * emergency_stop_r_mult`),
+        independent of lot size, so overriding volume never changes the stop
+        level or any strategy decision, only how many lots carry it."""
         side = "BUY" if direction == PositionState.LONG else "SELL"
         safety_dist = risk_unit * self.p.emergency_stop_r_mult
         sl = price - safety_dist if direction == PositionState.LONG else price + safety_dist
-        return self.broker.market_order(self.p.symbol, side, self.p.lot_size,
+        lot = self.p.lot_size if volume is None else volume
+        return self.broker.market_order(self.p.symbol, side, lot,
                                          sl=sl, tp=None, magic=self.p.magic_number, comment=comment)
 
     def close(self, ticket: int) -> OrderResult:
