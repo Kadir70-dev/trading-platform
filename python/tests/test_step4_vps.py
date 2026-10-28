@@ -152,19 +152,22 @@ def _params():
     return p
 
 
-def test_adopt_sets_holding_duration_to_zero_no_spurious_max_hold():
-    """Regression: a naive adoption with entry_bar_index=0 against a large live
-    bar index makes bars_held huge and instantly trips EXIT_MAX_HOLD_TIME. The
-    safe adoption must start bars_held at 0."""
+def test_adopt_rebuilds_10_actual_bars_without_spurious_max_hold():
     p = _params()
-    broker_pos = {"side": "BUY", "entry_price": 4000.0, "ticket": 555}
-    bar_index = 5000                                     # large live index
-    pos = es.adopt_position(p, broker_pos, bar_index, entry_time=None)
-    assert pos.entry_bar_index == bar_index              # not 0
+    t0 = 1_800_000_000  # UTC M1 open
+    broker_pos = {"side": "BUY", "entry_price": 4000.0, "ticket": 555,
+                  "position_id": 555, "sl": 3997.0, "time_msc": t0 * 1000 + 2000}
+    bar_index = 5000
+    bars = [t0 + 60 * i for i in range(11)]
+    deal = {"position_id": 555, "entry": 0, "order": 555,
+            "time_msc": t0 * 1000 + 2000}
+    pos = es.adopt_position(p, broker_pos, bar_index,
+                            history_deals=[deal], m1_bar_opens_sec=bars,
+                            current_bar_open_sec=bars[-1])
+    assert pos.entry_bar_index == bar_index - 10
     bars_held = bar_index - pos.entry_bar_index
-    assert bars_held == 0 and bars_held < p.max_hold_bars
+    assert bars_held == 10 and bars_held < p.max_hold_bars
 
-    # An exit evaluation on the adoption bar must NOT be EXIT_MAX_HOLD_TIME.
     ev = ExitEvaluator(p)
     reading = DirectionReading(Direction.LONG_STRONG, 80.0, "ok", atr_ratio=1.0,
                                momentum_norm=1.0, structure_score=1.0)
@@ -174,6 +177,11 @@ def test_adopt_sets_holding_duration_to_zero_no_spurious_max_hold():
 
 def test_adopt_direction_and_ticket_mapped():
     p = _params()
-    pos = es.adopt_position(p, {"side": "SELL", "entry_price": 4010.0, "ticket": 9}, 10)
+    t0 = 1_800_000_000
+    pos = es.adopt_position(
+        p, {"side": "SELL", "entry_price": 4010.0, "ticket": 9, "position_id": 9,
+            "sl": 4013.0, "time_msc": t0 * 1000}, 10,
+        history_deals=[], m1_bar_opens_sec=[t0, t0 + 60],
+        current_bar_open_sec=t0 + 60)
     assert pos.direction == PositionState.SHORT and pos.ticket == 9
     assert pos.risk_unit == p.stop_distance_usd
