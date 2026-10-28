@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  Windows Task Scheduler definition for the XAUUSD scalper supervisor.
+
+  Import:  schtasks /Create /TN "XAUUSDScalper" /XML scalper_task_scheduler.xml
+  Edit the <Command>/<Arguments>/<WorkingDirectory> paths and the run-as user
+  before importing. Runs at startup (24/7), restarts on failure, single instance
+  (IgnoreNew) — combined with the runner's own process lock, a reboot or an
+  overlapping trigger can never start a second bot.
+
+  NOTE: set MT5/Telegram secrets as machine/user environment variables or in a
+  .env read by the runner — never inline here, and never commit real values.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>XAUUSD Gold scalper 24/7 supervisor (demo).</Description>
+    <URI>\XAUUSDScalper</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT2M</Delay>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- Replace with the VPS trading user; interactive logon so MT5's GUI
+           terminal session is available. -->
+      <UserId>VPS\\tradingbot</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "C:\scalper\scripts\run_scalper_windows.ps1"</Arguments>
+      <WorkingDirectory>C:\scalper</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

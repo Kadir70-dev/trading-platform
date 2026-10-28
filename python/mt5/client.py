@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
@@ -95,27 +96,66 @@ class MT5Broker(Broker):
         }
 
     def positions(self) -> list[dict]:
-        ps = mt5.positions_get() or []
+        ps = mt5.positions_get()
+        if ps is None:
+            raise RuntimeError("MT5 positions_get failed; broker state unknown")
         out = []
         for p in ps:
+            # identifier is the persistent DEAL_POSITION_ID. The ticket may
+            # change after broker-side service operations; preserve both.
+            opened = getattr(p, "time", None)
+            opened_ms = getattr(p, "time_msc", None)
+            if not opened_ms and opened:
+                opened_ms = int(opened) * 1000
             out.append({
-                "ticket": p.ticket, "symbol": p.symbol,
+                "ticket": p.ticket, "position_id": getattr(p, "identifier", p.ticket),
+                "symbol": p.symbol, "magic": getattr(p, "magic", None),
+                "comment": getattr(p, "comment", ""),
                 "side": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
                 "volume": p.volume, "entry_price": p.price_open,
                 "sl": p.sl, "tp": p.tp, "swap": p.swap, "profit": p.profit,
+                "time": opened, "time_msc": opened_ms,
+                "time_update": getattr(p, "time_update", None),
             })
         return out
 
     def history(self, days: int = 7) -> list[dict]:
         to = int(time.time())
         frm = to - days * 86400
-        deals = mt5.history_deals_get(frm, to) or []
+        deals = mt5.history_deals_get(frm, to)
+        if deals is None:
+            raise RuntimeError("MT5 history_deals_get failed; broker P&L unknown")
         return [{
-            "ticket": d.ticket, "order": d.order, "symbol": d.symbol,
-            "type": d.type, "volume": d.volume, "price": d.price,
+            "ticket": d.ticket, "order": d.order,
+            "position_id": getattr(d, "position_id", None),
+            "symbol": d.symbol, "type": d.type,
+            "entry": getattr(d, "entry", None),
+            "volume": d.volume, "price": d.price,
             "profit": d.profit, "commission": d.commission, "swap": d.swap,
+            "fee": getattr(d, "fee", 0.0),
+            "magic": getattr(d, "magic", None),
+            "comment": getattr(d, "comment", ""),
             "time": d.time,
+            "time_msc": getattr(d, "time_msc", None) or int(d.time) * 1000,
         } for d in deals]
+
+    def m1_bar_opens(self, symbol: str, from_bar_sec: int, through_bar_sec: int) -> list[int]:
+        """Read-only UTC M1 candle opens, inclusive, for restart recovery.
+
+        Refuse pathological history queries (and unknown broker history) rather
+        than guessing from elapsed minutes or silently accepting missing data.
+        """
+        if (from_bar_sec <= 0 or through_bar_sec < from_bar_sec
+                or through_bar_sec - from_bar_sec > 31 * 86400):
+            raise ValueError("invalid or oversized M1 recovery history range")
+        rates = mt5.copy_rates_range(
+            symbol, mt5.TIMEFRAME_M1,
+            datetime.fromtimestamp(from_bar_sec, tz=timezone.utc),
+            datetime.fromtimestamp(through_bar_sec, tz=timezone.utc),
+        )
+        if rates is None:
+            raise RuntimeError("MT5 M1 history unavailable")
+        return [int(row["time"]) for row in rates]
 
     def symbol_info(self, symbol: str) -> dict:
         mt5.symbol_select(symbol, True)
@@ -221,10 +261,27 @@ _SIM_SEEDS = {"XAUUSD": (2350.0, 2, 0.01, 0.0008),
               "USDJPY": (157.50, 3, 0.001, 0.0004)}
 
 
+def _sim_contract_size(symbol: str) -> float:
+    """Contract size (units per 1.0 lot) by instrument class.
+
+    The previous hardcoded FX multiplier of 100,000 was wrong for metals: a
+    standard XAUUSD lot is 100 oz, so a $1/oz move on 1.0 lot is $100, not
+    $100,000. FX majors keep 100,000 (unchanged), so existing FX simulation
+    behavior is preserved.
+    """
+    s = symbol.upper()
+    if s.startswith("XAU"):
+        return 100.0        # gold: 100 oz / lot
+    if s.startswith("XAG"):
+        return 5000.0       # silver: 5,000 oz / lot
+    return 100000.0         # FX default (unchanged)
+
+
 class SimBroker(Broker):
     backend = "simulation"
 
-    def __init__(self, login: int, server: str, leverage: int, balance: float = 100.0):
+    def __init__(self, login: int, server: str, leverage: int, balance: float = 100.0,
+                 commission_per_lot: float = 0.0, swap_per_lot_per_close: float = 0.0):
         self._login = login or 99999999
         self._server = server or "Exness-Sim"
         self._leverage = leverage
@@ -233,6 +290,13 @@ class SimBroker(Broker):
         self._positions: dict[int, dict] = {}
         self._next_ticket = 100001
         self._rng = np.random.default_rng(42)
+        # Per-round-turn costs (defaults 0.0 preserve prior cost-free behavior).
+        self._commission_per_lot = commission_per_lot
+        self._swap_per_lot_per_close = swap_per_lot_per_close
+        # Broker-side deal ledger so history() returns realistic IN/OUT deals
+        # (with commission/swap and partial/SL-triggered closures) instead of [].
+        self._deals: list[dict] = []
+        self._next_deal = 900001
 
     def connect(self) -> bool:
         logger.warning("Using SIMULATION backend (no live MT5 terminal).")
@@ -247,7 +311,7 @@ class SimBroker(Broker):
     def account_info(self) -> dict:
         floating = sum(self._unrealised(p) for p in self._positions.values())
         self._equity = self._balance + floating
-        used_margin = sum(p["volume"] * 100000 * p["entry_price"] / self._leverage
+        used_margin = sum(p["volume"] * _sim_contract_size(p["symbol"]) * p["entry_price"] / self._leverage
                           for p in self._positions.values())
         margin_level = (self._equity / used_margin * 100.0) if used_margin else 0.0
         return {
@@ -260,10 +324,9 @@ class SimBroker(Broker):
         }
 
     def _unrealised(self, p: dict) -> float:
-        base, digits, point, _ = self._seed(p["symbol"])
         px = self.tick(p["symbol"])["bid"]
         diff = (px - p["entry_price"]) if p["side"] == "BUY" else (p["entry_price"] - px)
-        return diff * p["volume"] * 100000
+        return diff * p["volume"] * _sim_contract_size(p["symbol"])
 
     def positions(self) -> list[dict]:
         out = []
@@ -274,18 +337,40 @@ class SimBroker(Broker):
         return out
 
     def history(self, days: int = 7) -> list[dict]:
-        return []
+        to = int(time.time())
+        frm = to - days * 86400
+        return [d for d in self._deals if d["time"] >= frm]
+
+    def _record_deal(self, p: dict, *, entry: int, volume: float, price: float,
+                     profit: float, commission: float, swap: float) -> dict:
+        """Append a broker deal (entry=0 IN / entry=1 OUT) mirroring the fields
+        MT5Broker.history() exposes, so reconciliation code can be exercised
+        offline against the same shape."""
+        deal = {
+            "ticket": self._next_deal, "order": p["ticket"], "position_id": p["ticket"],
+            "symbol": p["symbol"], "type": p["side"], "entry": entry,
+            "volume": round(float(volume), 2), "price": price,
+            "profit": round(float(profit), 2), "commission": round(float(commission), 2),
+            "swap": round(float(swap), 2), "magic": p.get("magic", 0),
+            "comment": p.get("comment", ""), "time": int(time.time()),
+        }
+        self._next_deal += 1
+        self._deals.append(deal)
+        return deal
 
     def symbol_info(self, symbol: str) -> dict:
         base, digits, point, vol = self._seed(symbol)
         t = self.tick(symbol)
         spread_points = (t["ask"] - t["bid"]) / point
+        contract_size = _sim_contract_size(symbol)
+        # Value of one tick_size move per 1.0 lot, in account currency.
+        tick_value = contract_size * point
         return {
             "symbol": symbol, "digits": digits, "point": point,
             "bid": t["bid"], "ask": t["ask"], "spread_points": round(spread_points, 1),
             "volume_min": 0.01, "volume_max": 50.0, "volume_step": 0.01,
-            "trade_allowed": True, "tick_value": 1.0, "tick_size": point,
-            "contract_size": 100000,
+            "trade_allowed": True, "tick_value": tick_value, "tick_size": point,
+            "contract_size": contract_size,
         }
 
     def tick(self, symbol: str) -> dict:
@@ -321,30 +406,64 @@ class SimBroker(Broker):
         ticket = self._next_ticket
         self._next_ticket += 1
         self._positions[ticket] = {
-            "ticket": ticket, "symbol": symbol, "side": side, "volume": float(volume),
+            "ticket": ticket, "position_id": ticket,
+            "symbol": symbol, "side": side, "volume": float(volume),
             "entry_price": price, "sl": sl, "tp": tp, "swap": 0.0, "magic": magic,
+            "time": int(time.time()), "time_msc": int(time.time() * 1000),
+            "comment": comment,
         }
+        entry_commission = -self._commission_per_lot * float(volume)
+        self._balance += entry_commission
+        self._record_deal(self._positions[ticket], entry=0, volume=float(volume), price=price,
+                          profit=0.0, commission=entry_commission, swap=0.0)
         logger.info("[SIM] opened {} {} {} @ {} ticket={}", side, volume, symbol, price, ticket)
         return OrderResult(True, 10009, "DONE", ticket, price, float(volume),
                            info["spread_points"], {"sim": True})
+
+    def _close_at(self, ticket: int, close_price: float, volume=None, reason: str = "close") -> OrderResult:
+        """Shared close path for both a normal close and a broker SL trigger;
+        records an OUT deal (with commission+swap) and updates balance by the
+        realized amount (price P&L net of costs)."""
+        p = self._positions.get(ticket)
+        if p is None:
+            return OrderResult(False, -1, "position not found", None, None, None, None, {})
+        full_vol = p["volume"]
+        vol = float(volume or full_vol)
+        diff = (close_price - p["entry_price"]) if p["side"] == "BUY" else (p["entry_price"] - close_price)
+        price_pnl = diff * vol * _sim_contract_size(p["symbol"])
+        commission = -self._commission_per_lot * vol
+        swap = -self._swap_per_lot_per_close * vol
+        self._balance += price_pnl + commission + swap
+        p_snapshot = dict(p, comment=reason if reason else p.get("comment", ""))
+        if vol >= full_vol:
+            del self._positions[ticket]
+        else:  # partial close: residual stays open
+            p["volume"] = round(full_vol - vol, 8)
+        self._record_deal(p_snapshot, entry=1, volume=vol, price=close_price,
+                          profit=price_pnl, commission=commission, swap=swap)
+        logger.info("[SIM] closed ticket={} vol={} realized≈{:.2f} ({})",
+                    ticket, vol, price_pnl + commission + swap, reason)
+        return OrderResult(True, 10009, "DONE", ticket, close_price, vol, None, {"sim": True})
 
     def close_position(self, ticket, volume=None) -> OrderResult:
         p = self._positions.get(ticket)
         if p is None:
             return OrderResult(False, -1, "position not found", None, None, None, None, {})
-        pnl = self._unrealised(p)
-        vol = float(volume or p["volume"])
-        if vol >= p["volume"]:
-            self._balance += pnl
-            del self._positions[ticket]
-        else:  # partial close
-            frac = vol / p["volume"]
-            self._balance += pnl * frac
-            p["volume"] -= vol
         info = self.symbol_info(p["symbol"])
         price = info["bid"] if p["side"] == "BUY" else info["ask"]
-        logger.info("[SIM] closed ticket={} vol={} pnl≈{:.2f}", ticket, vol, pnl)
-        return OrderResult(True, 10009, "DONE", ticket, price, vol, None, {"sim": True})
+        return self._close_at(ticket, price, volume=volume, reason=p.get("comment", "close"))
+
+    def force_sl_close(self, ticket: int) -> OrderResult:
+        """Simulate a BROKER-SIDE stop-loss firing: the position is closed at
+        its SL price and removed, so a subsequent client ``close_position`` sees
+        'position not found' while ``history()`` shows the OUT deal — exactly the
+        live10 reconciliation scenario (P0-C)."""
+        p = self._positions.get(ticket)
+        if p is None:
+            return OrderResult(False, -1, "position not found", None, None, None, None, {})
+        if p.get("sl") in (None, 0, 0.0):
+            return OrderResult(False, -1, "no stop loss attached", None, None, None, None, {})
+        return self._close_at(ticket, float(p["sl"]), volume=None, reason="sl")
 
     def modify(self, ticket, sl=None, tp=None) -> OrderResult:
         p = self._positions.get(ticket)
