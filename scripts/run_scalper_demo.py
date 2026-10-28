@@ -34,6 +34,7 @@ from scalper.broker_adapter import BrokerAdapter  # noqa: E402
 from scalper.config import ScalperParams  # noqa: E402
 from scalper.state_machine import ScalperStateMachine  # noqa: E402
 from scalper.types import PositionState  # noqa: E402
+from scalper import reconciliation as rec  # noqa: E402
 
 POLL_SEC = 5  # how often to check for a newly closed bar
 
@@ -107,7 +108,11 @@ def main() -> int:
 
     conn, broker = connect_real_mt5()
     adapter = BrokerAdapter(broker, params)
-    sm = ScalperStateMachine(params, symbol=params.symbol)
+    # pnl_mode="broker": the strategy never books its own leg_pnl into the risk
+    # guard. We reconcile the real MT5 deals and feed the authoritative realized
+    # figure in, so a simulated number can never drive live risk controls.
+    sm = ScalperStateMachine(params, symbol=params.symbol, pnl_mode="broker")
+    ledger = rec.ReconcileLedger()
 
     run_dir = ROOT / "data" / "scalper-demo" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +165,7 @@ def main() -> int:
                 if d.event.startswith("ENTER_"):
                     primary_ticket = _execute_open(broker, adapter, params, sm.position, None)
                 elif d.event.startswith("EXIT_"):
-                    _execute_close(broker, primary_ticket, d.reason_code, d.detail)
+                    _execute_close(broker, sm, ledger, primary_ticket, d.reason_code, d.detail, now)
                     primary_ticket = None
                 elif d.event.startswith("FLIP_"):
                     primary_ticket = _execute_open(broker, adapter, params, sm.position, d.detail)
@@ -194,20 +199,57 @@ def _execute_open(broker: MT5Broker, adapter: BrokerAdapter, params: ScalperPara
     return None
 
 
-def _execute_close(broker: MT5Broker, ticket: int | None, reason_code: str, detail) -> None:
+def _safe(fn):
+    """Run a broker query, returning None if it raises — so a transient failure
+    is surfaced as 'unknown' (TRANSIENT) rather than a fabricated empty result."""
+    try:
+        return fn()
+    except Exception as exc:  # pragma: no cover - exercised via unit tests with a stub
+        log_line(event="BROKER_QUERY_FAILED", error=str(exc))
+        return None
+
+
+def _execute_close(broker: MT5Broker, sm: ScalperStateMachine, ledger: "rec.ReconcileLedger",
+                   ticket: int | None, reason_code: str, detail, now) -> None:
+    """Close a position and reconcile the AUTHORITATIVE realized P&L from broker
+    deals. Never books strategy-computed P&L; never treats an unknown outcome as
+    zero; fails closed (blocks new entries) on a transient/absent outcome."""
     if ticket is None:
         return
-    pre_close_positions = broker.positions()
-    live_pnl = next((p["profit"] for p in pre_close_positions if p["ticket"] == ticket), None)
-
     res = broker.close_position(ticket)
-    acct = broker.account_info()
-    history = broker.history(days=1)
-    deal = next((d for d in history if d.get("position_id") == ticket and d.get("entry") == 1), None)
-    log_line(event="ORDER_CLOSE", ticket=ticket, close_price=res.price, pnl=live_pnl,
+
+    reconciliation = rec.reconcile_with_retry(
+        ticket,
+        fetch_positions=lambda: _safe(broker.positions),
+        fetch_deals=lambda: _safe(lambda: broker.history(days=1)),
+        ledger=ledger,
+        client_close_ok=res.ok,
+    )
+
+    acct = _safe(broker.account_info) or {}
+    if reconciliation.status == rec.STATUS_CONFIRMED:
+        ledger.book_tickets(reconciliation.booked_deal_tickets)
+        sm.record_broker_realized(reconciliation.realized, now)   # broker truth -> risk guard
+        sm.guard.set_broker_state_known(True)
+    elif reconciliation.status == rec.STATUS_STILL_OPEN:
+        # The close did not take; do NOT rebook or resend blindly. Leave the
+        # position to the next bar's logic; state is still known.
+        pass
+    else:  # TRULY_ABSENT or TRANSIENT -> outcome unknown, fail closed
+        sm.guard.set_broker_state_known(False, reason=reconciliation.detail)
+
+    log_line(event="ORDER_CLOSE", ticket=ticket, close_price=res.price,
               close_reason=reason_code, close_detail=detail,
               retcode=res.retcode, retcode_desc=res.retcode_desc,
-              deal_id=deal["ticket"] if deal else None, balance=acct["balance"], equity=acct["equity"])
+              reconcile_status=reconciliation.status,
+              realized=reconciliation.realized,            # None when unknown — never a fake 0
+              closed_by_broker=reconciliation.closed_by_broker,
+              broker_state_known=sm.guard.broker_state_known,
+              balance=acct.get("balance"), equity=acct.get("equity"))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 if __name__ == "__main__":

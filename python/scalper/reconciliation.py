@@ -101,3 +101,111 @@ def realized_from_balance_sequence(close_balances: list[float], start_balance: f
         out.append(round(b - prev, 2))
         prev = b
     return out
+
+
+# ---------------------------------------------------------------------------
+# Step 2: authoritative broker-deal reconciliation
+# ---------------------------------------------------------------------------
+
+# reconcile_close statuses
+STATUS_CONFIRMED = "CONFIRMED"        # OUT deal(s) present -> realized P&L is known
+STATUS_STILL_OPEN = "STILL_OPEN"      # position still open, no new OUT deal
+STATUS_TRULY_ABSENT = "TRULY_ABSENT"  # gone, but no OUT deal evidence -> outcome UNKNOWN
+STATUS_TRANSIENT = "TRANSIENT"        # broker query failed -> retry, do not decide
+
+
+def _deal_cost_sum(deals: list[dict]) -> float:
+    """Realized account impact of a set of deals = Σ(profit + commission + swap).
+
+    IN deals (entry) carry profit 0 but may carry entry-side commission, so
+    summing over IN+OUT correctly allocates entry trading costs."""
+    return round(sum(float(d.get("profit", 0.0)) + float(d.get("commission", 0.0))
+                     + float(d.get("swap", 0.0)) for d in deals), 2)
+
+
+class ReconcileLedger:
+    """Records already-booked broker deal tickets so the same deal is never
+    counted twice — across repeated reconciliation, duplicate history replays
+    or a runner restart. Serializable (``processed``) for restart safety."""
+
+    def __init__(self, processed: list | set | None = None):
+        self._processed: set = set(processed or [])
+
+    def unbooked(self, position_id: int, deals: list[dict]) -> list[dict]:
+        return [d for d in deals
+                if d.get("position_id") == position_id and d.get("ticket") not in self._processed]
+
+    def book(self, deals: list[dict]) -> None:
+        for d in deals:
+            self._processed.add(d.get("ticket"))
+
+    def book_tickets(self, tickets: list) -> None:
+        for t in tickets:
+            self._processed.add(t)
+
+    @property
+    def processed(self) -> set:
+        return set(self._processed)
+
+
+@dataclass(frozen=True)
+class CloseReconciliation:
+    status: str
+    realized: float | None          # None unless CONFIRMED — never 0 for an unknown outcome
+    state_known: bool               # False => block new entries (fail closed)
+    closed_by_broker: bool          # True when the client close failed but deals confirm a close
+    booked_deal_tickets: list       # OUT/IN deal tickets newly counted (for the ledger)
+    detail: str
+
+
+def reconcile_close(position_id: int, positions: list[dict] | None, deals: list[dict] | None,
+                    ledger: ReconcileLedger, *, client_close_ok: bool = True) -> CloseReconciliation:
+    """Determine the authoritative outcome of a close from broker evidence.
+
+    ``positions``/``deals`` are snapshots already fetched from the broker; pass
+    ``None`` for either when that query FAILED (disconnect/timeout) — this
+    yields TRANSIENT (retry), never a fabricated zero-P&L close.
+    ``client_close_ok`` is whether ``close_position`` itself returned success;
+    a False with confirming OUT deals means the broker closed it (e.g. SL).
+    """
+    if positions is None or deals is None:
+        return CloseReconciliation(STATUS_TRANSIENT, None, False, False, [],
+                                   "broker query failed (positions/deals unavailable) — retry")
+
+    still_open = any(p.get("ticket") == position_id for p in positions)
+    unbooked = ledger.unbooked(position_id, deals)
+    out_deals = [d for d in unbooked if d.get("entry") == 1]
+
+    if out_deals:
+        realized = _deal_cost_sum(unbooked)   # includes entry-side costs still unbooked
+        return CloseReconciliation(
+            STATUS_CONFIRMED, realized, True, (not client_close_ok),
+            [d.get("ticket") for d in unbooked],
+            f"{len(out_deals)} OUT deal(s) confirm close; realized={realized}")
+
+    if still_open:
+        return CloseReconciliation(STATUS_STILL_OPEN, None, True, False, [],
+                                   "position still open, no new OUT deal")
+
+    # Not open and no OUT deal evidence: outcome genuinely unknown. Do NOT book 0.
+    return CloseReconciliation(STATUS_TRULY_ABSENT, None, False, False, [],
+                               "position absent with no OUT deal — outcome unknown, state not trusted")
+
+
+def reconcile_with_retry(position_id, fetch_positions, fetch_deals, ledger, *,
+                         client_close_ok: bool = True, max_attempts: int = 5):
+    """Poll broker snapshots up to ``max_attempts`` times until a close is
+    confirmed; ``fetch_*`` raise or return None on a failed query (TRANSIENT).
+    Pure w.r.t. time (no sleeps) — the caller injects fetch callables, so this
+    is fully offline-testable. Returns the final CloseReconciliation."""
+    last = None
+    for _ in range(max_attempts):
+        try:
+            positions = fetch_positions()
+            deals = fetch_deals()
+        except Exception:
+            positions = deals = None
+        last = reconcile_close(position_id, positions, deals, ledger, client_close_ok=client_close_ok)
+        if last.status in (STATUS_CONFIRMED, STATUS_STILL_OPEN):
+            return last
+    return last

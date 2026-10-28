@@ -34,9 +34,24 @@ from .types import DecisionLog, Direction, Position, PositionState
 
 
 class ScalperStateMachine:
-    def __init__(self, params: ScalperParams, symbol: str | None = None):
+    def __init__(self, params: ScalperParams, symbol: str | None = None,
+                 pnl_mode: str = "internal"):
+        """pnl_mode:
+        * "internal" (default) — the strategy's own ``leg_pnl`` updates the risk
+          guard at close time. Used by the backtester and SimBroker replays,
+          where there is no broker deal ledger. Behavior is identical to before.
+        * "broker" — the strategy NEVER books its computed P&L into the guard.
+          The live runner reconciles the actual broker deals and calls
+          ``record_broker_realized()`` with the authoritative figure instead, so
+          a simulated number can never drive real-account risk controls.
+        Strategy decisions (direction/entry/flip/trailing) are identical in both
+        modes; only WHO supplies the guard's realized P&L differs.
+        """
+        if pnl_mode not in ("internal", "broker"):
+            raise ValueError(f"pnl_mode must be 'internal' or 'broker', got {pnl_mode!r}")
         self.p = params
         self.symbol = symbol or params.symbol
+        self.pnl_mode = pnl_mode
         self.direction = DirectionDetector(params)
         self.entry = EntryConfirmer(params)
         self.exit = ExitEvaluator(params)
@@ -49,6 +64,29 @@ class ScalperStateMachine:
         self.direction_switch_count = 0
         self.same_direction_reentry_count = 0
         self.flip_count = 0
+        # Closes awaiting broker reconciliation (broker mode only): the runner
+        # drains these after reconciling the real deals.
+        self.pending_broker_closes: list = []
+
+    def _book_result(self, pnl: float, now: Any, *, ticket: int | None = None,
+                     entry_price: float | None = None, exit_price: float | None = None) -> None:
+        """Route a closed trade's realized P&L. In internal mode the strategy's
+        computed ``pnl`` updates the guard immediately (unchanged behavior). In
+        broker mode the guard is NOT touched here — the close is queued for the
+        runner to reconcile against authoritative broker deals."""
+        if self.pnl_mode == "internal":
+            self.guard.register_trade_result(pnl, now)
+        else:
+            self.pending_broker_closes.append({
+                "ticket": ticket, "strategy_pnl": pnl, "time": now,
+                "entry_price": entry_price, "exit_price": exit_price,
+            })
+
+    def record_broker_realized(self, realized: float, now: Any) -> None:
+        """Feed AUTHORITATIVE broker-reconciled realized P&L into the risk guard
+        (broker mode). Dedup/idempotency is the caller's responsibility via the
+        reconciliation ledger — this simply records a confirmed figure."""
+        self.guard.register_trade_result(realized, now)
 
     def on_bar(self, df: pd.DataFrame, spread_points: float, now: Any) -> List[DecisionLog]:
         price = float(df.iloc[-1]["close"])
@@ -120,7 +158,8 @@ class ScalperStateMachine:
         pnl = leg_pnl(old_position, price, self.p)
         bars_held = bar_index - old_position.entry_bar_index
 
-        self.guard.register_trade_result(pnl, now)
+        self._book_result(pnl, now, ticket=old_position.ticket,
+                          entry_price=old_position.entry_price, exit_price=price)
         self.reentry.record_exit(old_direction, now)
         self.state = PositionState.FLAT
         self.position = None
@@ -169,7 +208,8 @@ class ScalperStateMachine:
         pnl = leg_pnl(self.position, price, self.p)
         exited_direction = self.state
         bars_held = bar_index - self.position.entry_bar_index
-        self.guard.register_trade_result(pnl, now)
+        self._book_result(pnl, now, ticket=self.position.ticket,
+                          entry_price=self.position.entry_price, exit_price=price)
         self.reentry.record_exit(exited_direction, now)
 
         log = self._log(now, f"EXIT_{exited_direction.value}", reason_code,

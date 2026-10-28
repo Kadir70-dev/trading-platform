@@ -50,6 +50,16 @@ class RiskGuard:
         self.kill_switch: bool = False
         self.kill_switch_reason: str = ""
         self.flip_times: list = []
+        # Fail-closed broker-state flag. True by default so backtest/SimBroker
+        # ("internal" P&L) behavior is unchanged. The live runner sets this
+        # False whenever broker financial state is unknown (disconnect, failed
+        # reconciliation, unresolved close) — which then blocks new entries.
+        self.broker_state_known: bool = True
+
+    def set_broker_state_known(self, known: bool, reason: str = "") -> None:
+        self.broker_state_known = known
+        if not known and reason:
+            self.kill_switch_reason = self.kill_switch_reason or reason
 
     def trip_kill_switch(self, reason: str) -> None:
         self.kill_switch = True
@@ -69,6 +79,9 @@ class RiskGuard:
 
     def check_pretrade(self, spread_points: float, now: Any) -> GuardResult:
         self._roll_day(now)
+        if not self.broker_state_known:
+            return GuardResult(False, "BLOCKED_STATE_UNKNOWN",
+                                "broker financial state unknown — failing closed, no new entries")
         if self.kill_switch:
             return GuardResult(False, "BLOCKED_KILL_SWITCH", self.kill_switch_reason)
         if self.daily_pnl <= -self.p.max_daily_loss_usd:
