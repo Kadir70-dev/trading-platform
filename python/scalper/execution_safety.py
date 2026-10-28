@@ -13,6 +13,9 @@ here; no positions are closed or modified.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from .recovery_clock import Deal, recover_m1_clock
 
 from .sizing import SizingResult, compute_lot
 from .symbol_spec import SymbolSpec
@@ -119,6 +122,10 @@ def startup_recovery(broker, magic: int, symbol: str, *, policy: str = "manual")
     if not mine:
         return RecoveryPlan(RECOVER_START_FLAT, [], [], foreign, True, "no pre-existing scalper position")
 
+    if policy == "adopt" and len(mine) != 1:
+        return RecoveryPlan(RECOVER_MANUAL, mine, orphans, foreign, False,
+                            "more than one scalper position; automatic adoption blocked")
+
     if policy == "adopt":
         # Rebuild internal state; still flag orphans (missing SL) so the caller
         # can fail closed rather than trade an unprotected position.
@@ -130,24 +137,86 @@ def startup_recovery(broker, magic: int, symbol: str, *, policy: str = "manual")
                         "pre-existing position requires manual review (policy=manual)")
 
 
-def adopt_position(params, broker_position: dict, current_bar_index: int, entry_time=None) -> Position:
-    """Rebuild internal Position state for an adopted broker position.
+def adopt_position(params, broker_position: dict, current_bar_index: int, *,
+                   history_deals: list[dict] | None,
+                   m1_bar_opens_sec: list[int] | None,
+                   current_bar_open_sec: int) -> Position:
+    """Reconstruct original position age from broker opening time + M1 candles.
 
-    IMPORTANT (Step-4 safety): entry_bar_index is set to the CURRENT bar index,
-    so bars_held starts at 0 and grows naturally. Setting it to 0 (as a naive
-    adoption would) against a large live bar index makes bars_held appear huge
-    and would instantly trip EXIT_MAX_HOLD_TIME — unsafe trade management on an
-    inherited position. This prevents that. Peak/worst favorable move reset to 0
-    so trailing re-arms from adoption rather than acting on an unknown MFE."""
-    side = PositionState.LONG if broker_position.get("side") == "BUY" else PositionState.SHORT
+    Refuse unknown/conflicting evidence or expired max-hold positions. Never
+    fabricate a fresh holding clock on restart. Partial OUT deals leave the
+    original opening time intact; netting reversals require human review.
+    This function only returns an in-memory Position; never issues orders.
+    """
+    if broker_position.get("side") not in ("BUY", "SELL"):
+        raise ValueError("unknown broker position side")
+    if not broker_position.get("sl"):
+        raise ValueError("broker position has no protective SL")
+    position_id = broker_position.get("position_id") or broker_position.get("ticket")
+    if not isinstance(position_id, int) or position_id <= 0:
+        raise ValueError("missing broker position identifier")
+    if history_deals is None:
+        raise ValueError("broker history unavailable")
+
+    opened_msc = broker_position.get("time_msc")
+    if not opened_msc and broker_position.get("time"):
+        opened_msc = int(broker_position["time"]) * 1000
+
+    kinds = {0: "IN", 1: "OUT", 2: "INOUT", 3: "OUT_BY"}
+    deals = []
+    for d in history_deals:
+        if d.get("position_id") != position_id:
+            continue
+        entry = kinds.get(d.get("entry"))
+        if entry is None:
+            raise ValueError("unknown broker deal entry type")
+        ts_ms = d.get("time_msc") or (int(d["time"]) * 1000 if d.get("time") else None)
+        if not ts_ms or not d.get("order"):
+            raise ValueError("broker deal missing timestamp/order")
+        deals.append(Deal(position_id, int(d["order"]), entry, int(ts_ms)))
+
+    outcome = recover_m1_clock(
+        position_id=position_id,
+        position_time_msc=int(opened_msc) if opened_msc is not None else None,
+        deals=deals,
+        m1_bar_opens_sec=m1_bar_opens_sec,
+        current_bar_open_sec=current_bar_open_sec,
+        current_bar_index=current_bar_index,
+    )
+    if outcome.status != "ADOPT":
+        raise ValueError(f"adoption blocked: {outcome.reason}")
+    if outcome.bars_held >= params.max_hold_bars:
+        # Do not auto-trigger an immediate EXIT on an inherited position.
+        raise ValueError("adoption blocked: MAX_HOLD_REACHED_MANUAL_REVIEW")
+    side = PositionState.LONG if broker_position["side"] == "BUY" else PositionState.SHORT
     return Position(
         direction=side,
         entry_price=float(broker_position["entry_price"]),
-        entry_time=entry_time,
-        entry_bar_index=current_bar_index,
+        entry_time=datetime.fromtimestamp(outcome.opened_at_msc / 1000, tz=timezone.utc),
+        entry_bar_index=outcome.entry_bar_index,
         risk_unit=params.stop_distance_usd,
         ticket=broker_position.get("ticket"),
     )
+
+
+def advance_position_clock(position: Position, previous_closed_bar_time, closed_bar_times) -> int:
+    """Keep bars_held increasing with a rolling-window M1 DataFrame.
+
+    The live runner requests a constant-length window, so len(df)-1 is always
+    nearly constant. Rebase only the runtime position's entry index by the
+    number of genuinely NEW closed broker bars. Historical strategy code and
+    its golden regression remain unchanged.
+    """
+    times = list(closed_bar_times)
+    if not times or previous_closed_bar_time not in times:
+        raise ValueError("closed-bar continuity cannot be verified")
+    if times != sorted(set(times)):
+        raise ValueError("closed bars out of order or duplicated")
+    added = sum(t > previous_closed_bar_time for t in times)
+    if added < 1:
+        raise ValueError("no new closed M1 bar")
+    position.entry_bar_index -= added
+    return added
 
 
 # ---------------------------------------------------------------------------
