@@ -169,11 +169,11 @@ def main() -> int:
     log_line(event="RECOVERY", action=plan.action, reason=plan.reason,
               ours=len(plan.positions), orphans_no_sl=len(plan.orphans_no_sl),
               foreign=len(plan.foreign_positions), state_known=plan.state_known)
-    # Defer rebuilding an adopted Position until the first bar, so entry_bar_index
-    # is set to the real current bar index (bars_held starts at 0) — see
-    # es.adopt_position. Building it now with a stale index could instantly trip
-    # EXIT_MAX_HOLD_TIME on an inherited position.
-    pending_adopt = plan.positions[0] if (plan.action == es.RECOVER_ADOPT and plan.positions) else None
+    # Only protected, unambiguous single-position recovery may be adopted.
+    # Hold-age reconstruction waits for actual broker M1 candle timestamps.
+    pending_adopt = (plan.positions[0]
+                     if plan.action == es.RECOVER_ADOPT and plan.state_known
+                     and len(plan.positions) == 1 else None)
     if pending_adopt:
         primary_ticket = pending_adopt["ticket"]
     if not plan.state_known:
@@ -201,20 +201,58 @@ def main() -> int:
                 time.sleep(POLL_SEC)
                 continue
 
-            bars = wait_for_next_closed_bar(broker, conn, params.symbol, "M1", last_bar_time)
+            previous_closed_bar = last_bar_time
+            bars = wait_for_next_closed_bar(broker, conn, params.symbol, "M1", previous_closed_bar)
             last_bar_time = bars["time"].iloc[-1]
             now = datetime.now(timezone.utc)
             spread_points = info["spread_points"]
 
-            # Safe adoption: build the inherited Position now that we have a real
-            # bar index (bars_held starts at 0, not a spurious huge value).
+            # A rolling 300-bar DataFrame has a nearly constant len(df)-1.
+            # Advance the existing position's age using actual newly closed
+            # broker bars, never wall-clock time or a fabricated 1-bar tick.
+            if sm.position is not None and previous_closed_bar is not None:
+                try:
+                    age_delta = es.advance_position_clock(
+                        sm.position, previous_closed_bar, bars["time"])
+                    log_line(event="HOLD_CLOCK_ADVANCED", new_closed_bars=age_delta)
+                except ValueError as exc:
+                    log_line(event="RECOVERY_BLOCKED", reason=str(exc))
+                    notifier.manual_intervention("M1 holding clock became unverifiable")
+                    break
+
             if pending_adopt is not None:
-                bar_index = len(bars) - 1
-                sm.position = es.adopt_position(params, pending_adopt, bar_index,
-                                                entry_time=now)
-                sm.state = sm.position.direction
-                log_line(event="ADOPTED", ticket=pending_adopt["ticket"], bar_index=bar_index,
-                          side=sm.position.direction.value)
+                try:
+                    bar_index = len(bars) - 1
+                    bar_dt = last_bar_time.to_pydatetime()
+                    if bar_dt.tzinfo is None:
+                        bar_dt = bar_dt.replace(tzinfo=timezone.utc)
+                    bar_open_sec = int(bar_dt.timestamp())
+                    opened_ms = pending_adopt.get("time_msc")
+                    if not opened_ms and pending_adopt.get("time"):
+                        opened_ms = int(pending_adopt["time"]) * 1000
+                    if not opened_ms or opened_ms <= 0:
+                        raise ValueError("missing broker opening timestamp")
+                    deals = broker.history(days=30)
+                    m1_opens = broker.m1_bar_opens(
+                        params.symbol, (int(opened_ms) // 60000) * 60, bar_open_sec)
+                    adopted = es.adopt_position(
+                        params, pending_adopt, bar_index,
+                        history_deals=deals, m1_bar_opens_sec=m1_opens,
+                        current_bar_open_sec=bar_open_sec)
+                except Exception as exc:
+                    # NEVER adopt with an invented age; no automatic close or
+                    # protective order modifications on ambiguous recovery.
+                    log_line(event="RECOVERY_BLOCKED", reason=str(exc))
+                    sm.guard.set_broker_state_known(False, reason="adoption metadata unverified")
+                    notifier.manual_intervention("adoption requires manual review")
+                    break
+                sm.position = adopted
+                sm.state = adopted.direction
+                log_line(event="ADOPTED", ticket=pending_adopt["ticket"],
+                         bar_index=bar_index,
+                         bars_held=bar_index - adopted.entry_bar_index,
+                         entry_time=adopted.entry_time.isoformat(),
+                         side=adopted.direction.value)
                 pending_adopt = None
 
             # Session gate: entries only during valid Gold sessions (monitoring
