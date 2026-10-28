@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
@@ -95,27 +96,66 @@ class MT5Broker(Broker):
         }
 
     def positions(self) -> list[dict]:
-        ps = mt5.positions_get() or []
+        ps = mt5.positions_get()
+        if ps is None:
+            raise RuntimeError("MT5 positions_get failed; broker state unknown")
         out = []
         for p in ps:
+            # identifier is the persistent DEAL_POSITION_ID. The ticket may
+            # change after broker-side service operations; preserve both.
+            opened = getattr(p, "time", None)
+            opened_ms = getattr(p, "time_msc", None)
+            if not opened_ms and opened:
+                opened_ms = int(opened) * 1000
             out.append({
-                "ticket": p.ticket, "symbol": p.symbol,
+                "ticket": p.ticket, "position_id": getattr(p, "identifier", p.ticket),
+                "symbol": p.symbol, "magic": getattr(p, "magic", None),
+                "comment": getattr(p, "comment", ""),
                 "side": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
                 "volume": p.volume, "entry_price": p.price_open,
                 "sl": p.sl, "tp": p.tp, "swap": p.swap, "profit": p.profit,
+                "time": opened, "time_msc": opened_ms,
+                "time_update": getattr(p, "time_update", None),
             })
         return out
 
     def history(self, days: int = 7) -> list[dict]:
         to = int(time.time())
         frm = to - days * 86400
-        deals = mt5.history_deals_get(frm, to) or []
+        deals = mt5.history_deals_get(frm, to)
+        if deals is None:
+            raise RuntimeError("MT5 history_deals_get failed; broker P&L unknown")
         return [{
-            "ticket": d.ticket, "order": d.order, "symbol": d.symbol,
-            "type": d.type, "volume": d.volume, "price": d.price,
+            "ticket": d.ticket, "order": d.order,
+            "position_id": getattr(d, "position_id", None),
+            "symbol": d.symbol, "type": d.type,
+            "entry": getattr(d, "entry", None),
+            "volume": d.volume, "price": d.price,
             "profit": d.profit, "commission": d.commission, "swap": d.swap,
+            "fee": getattr(d, "fee", 0.0),
+            "magic": getattr(d, "magic", None),
+            "comment": getattr(d, "comment", ""),
             "time": d.time,
+            "time_msc": getattr(d, "time_msc", None) or int(d.time) * 1000,
         } for d in deals]
+
+    def m1_bar_opens(self, symbol: str, from_bar_sec: int, through_bar_sec: int) -> list[int]:
+        """Read-only UTC M1 candle opens, inclusive, for restart recovery.
+
+        Refuse pathological history queries (and unknown broker history) rather
+        than guessing from elapsed minutes or silently accepting missing data.
+        """
+        if (from_bar_sec <= 0 or through_bar_sec < from_bar_sec
+                or through_bar_sec - from_bar_sec > 31 * 86400):
+            raise ValueError("invalid or oversized M1 recovery history range")
+        rates = mt5.copy_rates_range(
+            symbol, mt5.TIMEFRAME_M1,
+            datetime.fromtimestamp(from_bar_sec, tz=timezone.utc),
+            datetime.fromtimestamp(through_bar_sec, tz=timezone.utc),
+        )
+        if rates is None:
+            raise RuntimeError("MT5 M1 history unavailable")
+        return [int(row["time"]) for row in rates]
 
     def symbol_info(self, symbol: str) -> dict:
         mt5.symbol_select(symbol, True)
@@ -366,8 +406,10 @@ class SimBroker(Broker):
         ticket = self._next_ticket
         self._next_ticket += 1
         self._positions[ticket] = {
-            "ticket": ticket, "symbol": symbol, "side": side, "volume": float(volume),
+            "ticket": ticket, "position_id": ticket,
+            "symbol": symbol, "side": side, "volume": float(volume),
             "entry_price": price, "sl": sl, "tp": tp, "swap": 0.0, "magic": magic,
+            "time": int(time.time()), "time_msc": int(time.time() * 1000),
             "comment": comment,
         }
         entry_commission = -self._commission_per_lot * float(volume)
