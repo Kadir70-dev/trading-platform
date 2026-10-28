@@ -1,0 +1,30 @@
+name: XAUUSD Scalper offline regression
+on:
+  push:
+    branches: [fix/step5b-broker-clock]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: python/requirements.txt
+      - name: Install offline test dependencies (no MT5 terminal)
+        run: |
+          python -m pip install -U pip
+          python -m pip install numpy pandas loguru pydantic pydantic-settings python-dotenv pytest
+      - name: Compile edited Python modules
+        run: |
+          python -m py_compile python/mt5/client.py python/scalper/recovery_clock.py python/scalper/execution_safety.py scripts/run_scalper_demo.py
+      - name: All scalper tests including locked strategy golden regression
+        env:
+          PYTHONPATH: python
+        run: python -m pytest -q python/tests
